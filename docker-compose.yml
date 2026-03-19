@@ -14,5 +14,8 @@ services:
       context: ./client
     depends_on:
       - server
+    environment:
+      BACKEND_HOST: server
+      BACKEND_PORT: 3000
     ports:
       - "5173:80"
