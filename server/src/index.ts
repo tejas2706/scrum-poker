@@ -1,3 +1,4 @@
+import cors from 'cors';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -9,12 +10,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT ?? 3000;
 const DATA_DIR = path.join(__dirname, '../data');
 const FEATURE_HISTORY_FILE = path.join(DATA_DIR, 'feature-history.json');
+const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? 'http://localhost:5173')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 const app = express();
+app.use(
+  cors({
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+  })
+);
+
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.NODE_ENV === 'production' ? false : ['http://localhost:5173'],
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
   },
 });
