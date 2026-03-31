@@ -2,6 +2,13 @@
 
 A modern planning poker tool for agile teams. Built with React, Node.js, and Socket.IO.
 
+## Documentation
+
+- `README.md`: local setup and project overview
+- `AGENTS.md`: repo-specific guidance for AI coding agents
+- `DESIGN.md`: current product and UI consistency guide
+- `DEPLOYMENT.md`: deployment notes for client and server
+
 ## Structure
 
 ```

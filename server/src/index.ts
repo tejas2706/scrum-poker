@@ -14,6 +14,15 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? 'http://localhost:5173')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
+const JIRA_BASE_URL = process.env.JIRA_BASE_URL?.replace(/\/$/, '') ?? null;
+const JIRA_PROJECT_KEY = process.env.JIRA_PROJECT_KEY ?? null;
+const JIRA_EMAIL = process.env.JIRA_EMAIL ?? null;
+const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN ?? null;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? null;
+const OPENAI_MODEL = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
+const isJiraAssistantConfigured = Boolean(
+  JIRA_BASE_URL && JIRA_PROJECT_KEY && JIRA_EMAIL && JIRA_API_TOKEN && OPENAI_API_KEY
+);
 
 const app = express();
 app.use(
@@ -59,8 +68,44 @@ interface RoleSummary {
 
 interface FeatureHistoryEntry {
   featureNumber: string;
+  featureSummary: string | null;
   overallAverage: number | null;
   roleSummaries: Record<UserRole, RoleSummary>;
+}
+
+interface JiraConnection {
+  isConfigured: boolean;
+  baseUrl: string | null;
+  projectKey: string | null;
+}
+
+interface OwnerChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  text: string;
+  createdAt: string;
+}
+
+interface JiraIssueSummary {
+  ticketKey: string;
+  title: string;
+  status: string | null;
+  assignee: string | null;
+  priority: string | null;
+  description: string | null;
+  acceptanceCriteria: string | null;
+  estimate: string | null;
+  url: string | null;
+}
+
+interface JiraAssistantAnalysis {
+  summary: string;
+  devEtaDays: number | null;
+  qaEtaDays: number | null;
+  suggestedStoryPoints: number | null;
+  confidence: 'low' | 'medium' | 'high' | null;
+  assumptions: string[];
+  explanation: string;
 }
 
 interface Room {
@@ -74,6 +119,10 @@ interface Room {
   isRevealed: boolean;
   currentFeatureNumber: string | null;
   featureHistory: FeatureHistoryEntry[];
+  jiraConnection: JiraConnection;
+  ownerChatMessages: OwnerChatMessage[];
+  currentJiraIssue: JiraIssueSummary | null;
+  currentJiraAnalysis: JiraAssistantAnalysis | null;
 }
 
 interface User {
@@ -154,6 +203,18 @@ function serializeRoom(room: Room) {
     isRevealed: room.isRevealed,
     currentFeatureNumber: room.currentFeatureNumber,
     featureHistory: room.featureHistory,
+    jiraConnection: room.jiraConnection,
+    ownerChatMessages: room.ownerChatMessages,
+    currentJiraIssue: room.currentJiraIssue,
+    currentJiraAnalysis: room.currentJiraAnalysis,
+  };
+}
+
+function createJiraConnection(): JiraConnection {
+  return {
+    isConfigured: isJiraAssistantConfigured,
+    baseUrl: JIRA_BASE_URL,
+    projectKey: JIRA_PROJECT_KEY,
   };
 }
 
@@ -218,9 +279,183 @@ function buildFeatureHistoryEntry(featureNumber: string, votes: Vote[]): Feature
 
   return {
     featureNumber,
+    featureSummary: null,
     overallAverage: calculateAverage(overallNumericVotes),
     roleSummaries,
   };
+}
+
+function createChatMessage(role: OwnerChatMessage['role'], text: string): OwnerChatMessage {
+  return {
+    id: crypto.randomUUID(),
+    role,
+    text,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function extractTextFromAdf(node: unknown): string {
+  if (!node) return '';
+  if (typeof node === 'string') return node;
+  if (Array.isArray(node)) return node.map((child) => extractTextFromAdf(child)).join(' ').trim();
+  if (typeof node !== 'object') return '';
+
+  const record = node as { text?: unknown; content?: unknown; type?: unknown };
+  const currentText = typeof record.text === 'string' ? record.text : '';
+  const childText = extractTextFromAdf(record.content);
+
+  if (record.type === 'paragraph' || record.type === 'heading') {
+    return [currentText, childText].filter(Boolean).join(' ').trim();
+  }
+
+  if (record.type === 'bulletList' || record.type === 'orderedList') {
+    return childText;
+  }
+
+  return [currentText, childText].filter(Boolean).join(' ').trim();
+}
+
+function normalizeJiraText(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') return value.trim() || null;
+  const text = extractTextFromAdf(value).replace(/\s+/g, ' ').trim();
+  return text || null;
+}
+
+function extractTicketKey(prompt: string, currentIssueKey: string | null): string | null {
+  const explicitMatch = prompt.match(/[A-Z][A-Z0-9]+-\d+/);
+  if (explicitMatch) return explicitMatch[0];
+  return currentIssueKey;
+}
+
+async function fetchJiraIssue(ticketKey: string): Promise<JiraIssueSummary> {
+  if (!JIRA_BASE_URL || !JIRA_EMAIL || !JIRA_API_TOKEN) {
+    throw new Error('Jira assistant is not configured on the backend');
+  }
+
+  const auth = Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
+  const response = await fetch(
+    `${JIRA_BASE_URL}/rest/api/3/issue/${encodeURIComponent(ticketKey)}?fields=summary,status,assignee,priority,description,customfield_10016,customfield_10015,timetracking`,
+    {
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Jira issue ${ticketKey} (${response.status})`);
+  }
+
+  const issue = (await response.json()) as {
+    key: string;
+    fields?: Record<string, unknown>;
+  };
+
+  const assigneeField = issue.fields?.assignee as { displayName?: string } | null | undefined;
+  const priorityField = issue.fields?.priority as { name?: string } | null | undefined;
+  const statusField = issue.fields?.status as { name?: string } | null | undefined;
+  const timetrackingField = issue.fields?.timetracking as { originalEstimate?: string } | null | undefined;
+  const estimateField = issue.fields?.customfield_10016 ?? issue.fields?.customfield_10015 ?? timetrackingField?.originalEstimate;
+
+  return {
+    ticketKey: issue.key,
+    title: typeof issue.fields?.summary === 'string' ? issue.fields.summary : issue.key,
+    status: statusField?.name ?? null,
+    assignee: assigneeField?.displayName ?? null,
+    priority: priorityField?.name ?? null,
+    description: normalizeJiraText(issue.fields?.description),
+    acceptanceCriteria: null,
+    estimate: typeof estimateField === 'number' ? String(estimateField) : normalizeJiraText(estimateField),
+    url: `${JIRA_BASE_URL}/browse/${issue.key}`,
+  };
+}
+
+async function generateJiraAssistantAnalysis(
+  prompt: string,
+  issue: JiraIssueSummary
+): Promise<JiraAssistantAnalysis> {
+  if (!OPENAI_API_KEY) {
+    throw new Error('OpenAI is not configured on the backend');
+  }
+
+  const systemPrompt =
+    'You are an agile delivery assistant. Return only valid JSON with keys summary, devEtaDays, qaEtaDays, suggestedStoryPoints, confidence, assumptions, explanation. Use days for ETA. Be practical and concise.';
+
+  const userPrompt = JSON.stringify({
+    projectKey: JIRA_PROJECT_KEY,
+    ownerPrompt: prompt,
+    ticket: issue,
+  });
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI request failed (${response.status})`);
+  }
+
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+  };
+
+  const rawContent = data.choices?.[0]?.message?.content;
+  if (!rawContent) {
+    throw new Error('OpenAI returned an empty assistant response');
+  }
+
+  const parsed = JSON.parse(rawContent) as Partial<JiraAssistantAnalysis>;
+
+  return {
+    summary: typeof parsed.summary === 'string' ? parsed.summary : `${issue.ticketKey}: ${issue.title}`,
+    devEtaDays: typeof parsed.devEtaDays === 'number' ? parsed.devEtaDays : null,
+    qaEtaDays: typeof parsed.qaEtaDays === 'number' ? parsed.qaEtaDays : null,
+    suggestedStoryPoints: typeof parsed.suggestedStoryPoints === 'number' ? parsed.suggestedStoryPoints : null,
+    confidence:
+      parsed.confidence === 'low' || parsed.confidence === 'medium' || parsed.confidence === 'high'
+        ? parsed.confidence
+        : null,
+    assumptions: Array.isArray(parsed.assumptions)
+      ? parsed.assumptions.filter((item): item is string => typeof item === 'string')
+      : [],
+    explanation: typeof parsed.explanation === 'string' ? parsed.explanation : 'No explanation returned.',
+  };
+}
+
+function formatAssistantMessage(issue: JiraIssueSummary, analysis: JiraAssistantAnalysis) {
+  const lines = [
+    `${issue.ticketKey}: ${issue.title}`,
+    `Status: ${issue.status ?? 'Unknown'}`,
+    `Assignee: ${issue.assignee ?? 'Unassigned'}`,
+    `Priority: ${issue.priority ?? 'Unknown'}`,
+    `Estimate: ${issue.estimate ?? 'Not set'}`,
+    `Summary: ${analysis.summary}`,
+    `Dev ETA (days): ${analysis.devEtaDays ?? '—'}`,
+    `QA ETA (days): ${analysis.qaEtaDays ?? '—'}`,
+    `Suggested Story Points: ${analysis.suggestedStoryPoints ?? '—'}`,
+    `Confidence: ${analysis.confidence ?? '—'}`,
+    `Explanation: ${analysis.explanation}`,
+  ];
+
+  if (analysis.assumptions.length > 0) {
+    lines.push(`Assumptions: ${analysis.assumptions.join('; ')}`);
+  }
+
+  return lines.join('\n');
 }
 
 function getCurrentFeatureEntry(room: Room): FeatureHistoryEntry | undefined {
@@ -261,6 +496,10 @@ io.on('connection', (socket) => {
         isRevealed: false,
         currentFeatureNumber: null,
         featureHistory: [],
+        jiraConnection: createJiraConnection(),
+        ownerChatMessages: [],
+        currentJiraIssue: null,
+        currentJiraAnalysis: null,
       };
 
       rooms.set(roomId, room);
@@ -351,7 +590,11 @@ io.on('connection', (socket) => {
       }
 
       room.currentFeatureNumber = featureNumber;
-      room.featureHistory.push(buildFeatureHistoryEntry(featureNumber, []));
+      const featureEntry = buildFeatureHistoryEntry(featureNumber, []);
+      if (room.currentJiraIssue?.ticketKey === featureNumber) {
+        featureEntry.featureSummary = room.currentJiraAnalysis?.summary ?? room.currentJiraIssue.title;
+      }
+      room.featureHistory.push(featureEntry);
       room.votes.clear();
       room.isRevealed = false;
       persistRoomFeatureHistory(room);
@@ -471,6 +714,69 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('[Socket.IO] Error revealing votes:', error);
       callback({ success: false, error: 'Failed to reveal votes' });
+    }
+  });
+
+  socket.on('jira-assistant-query', async (data: { roomId: string; prompt: string }, callback) => {
+    try {
+      const room = rooms.get(data.roomId.toUpperCase());
+      if (!room) {
+        callback({ success: false, error: 'Room not found' });
+        return;
+      }
+
+      const user = room.users.get(socket.id);
+      if (!user) {
+        callback({ success: false, error: 'User not in room' });
+        return;
+      }
+
+      if (socket.id !== room.createdBySocketId) {
+        callback({ success: false, error: 'Only the room creator can use the Jira assistant' });
+        return;
+      }
+
+      if (!room.jiraConnection.isConfigured) {
+        callback({ success: false, error: 'Jira assistant is not configured on the backend yet' });
+        return;
+      }
+
+      const prompt = data.prompt.trim();
+      if (!prompt) {
+        callback({ success: false, error: 'Ask a question about a Jira ticket' });
+        return;
+      }
+
+      const ticketKey = extractTicketKey(prompt.toUpperCase(), room.currentJiraIssue?.ticketKey ?? null);
+      if (!ticketKey) {
+        callback({ success: false, error: 'Include a Jira ticket key like ABC-123 in the question' });
+        return;
+      }
+
+      const userMessage = createChatMessage('user', prompt);
+      room.ownerChatMessages.push(userMessage);
+
+      const issue = await fetchJiraIssue(ticketKey);
+      const analysis = await generateJiraAssistantAnalysis(prompt, issue);
+
+      room.currentJiraIssue = issue;
+      room.currentJiraAnalysis = analysis;
+      room.ownerChatMessages.push(createChatMessage('assistant', formatAssistantMessage(issue, analysis)));
+
+      io.to(room.id).emit('jira-assistant-updated', {
+        room: serializeRoom(room),
+      });
+
+      callback({
+        success: true,
+        room: serializeRoom(room),
+      });
+    } catch (error) {
+      console.error('[Jira Assistant] Failed to answer prompt:', error);
+      callback({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to query Jira assistant',
+      });
     }
   });
 

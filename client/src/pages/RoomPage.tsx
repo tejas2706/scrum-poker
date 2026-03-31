@@ -22,6 +22,11 @@ function formatNumber(value: number | null) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
+function formatConfidence(value: 'low' | 'medium' | 'high' | null) {
+  if (!value) return '—';
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
 function getCurrentFeatureSummary(featureHistory: FeatureHistoryEntry[], featureNumber: string | null) {
   if (!featureNumber) return undefined;
 
@@ -47,6 +52,9 @@ export function RoomPage() {
   const [featureNumber, setFeatureNumber] = useState('');
   const [featureError, setFeatureError] = useState('');
   const [isStartingFeature, setIsStartingFeature] = useState(false);
+  const [assistantPrompt, setAssistantPrompt] = useState('');
+  const [assistantError, setAssistantError] = useState('');
+  const [isSendingAssistantPrompt, setIsSendingAssistantPrompt] = useState(false);
   const [decisionInputs, setDecisionInputs] = useState<Record<UserRole, string>>({
     developer: '',
     qa: '',
@@ -147,6 +155,7 @@ export function RoomPage() {
   const canVoteAgain = isCreator && currentRoom.isRevealed;
   const hasActiveFeature = !!currentRoom.currentFeatureNumber;
   const canStartFeature = isCreator && (!hasActiveFeature || currentRoom.isRevealed);
+  const canUseJiraAssistant = isCreator && currentRoom.jiraConnection.isConfigured;
 
   const handleVote = (value: string) => {
     if (currentRoom.isRevealed || isSubmitting || !hasActiveFeature) return;
@@ -176,6 +185,40 @@ export function RoomPage() {
       }
     );
   };
+
+  const handleSendAssistantPrompt = () => {
+    if (!roomId || !canUseJiraAssistant || isSendingAssistantPrompt) return;
+
+    const prompt = assistantPrompt.trim();
+    if (!prompt) {
+      setAssistantError('Ask a Jira ticket question like "Summarize ABC-123".');
+      return;
+    }
+
+    setIsSendingAssistantPrompt(true);
+    setAssistantError('');
+
+    socket.emit(
+      'jira-assistant-query',
+      { roomId, prompt },
+      (response: { success: boolean; room?: unknown; error?: string }) => {
+        setIsSendingAssistantPrompt(false);
+        if (!response.success) {
+          setAssistantError(response.error || 'Failed to get a Jira assistant response');
+          return;
+        }
+
+        setAssistantPrompt('');
+      }
+    );
+  };
+
+  const handleUseTicketForVoting = () => {
+    if (!currentRoom.currentJiraIssue) return;
+    setFeatureNumber(currentRoom.currentJiraIssue.ticketKey);
+    setFeatureError('');
+  };
+
 
   const handleSubmitVote = async () => {
     if (!selectedVote || !roomId || currentRoom.isRevealed || isSubmitting || !hasActiveFeature) return;
@@ -409,6 +452,177 @@ export function RoomPage() {
                     </div>
                   </div>
                 )}
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+      )}
+
+      {isCreator && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.12 }}
+          className="mb-6 sm:mb-8"
+        >
+          <Card>
+            <CardHeader>
+              <Typography variant="h5">Owner Jira Assistant</Typography>
+              <Typography variant="small" className="text-surface-600 dark:text-surface-400">
+                {currentRoom.jiraConnection.isConfigured
+                  ? `Ticket-focused assistant for project ${currentRoom.jiraConnection.projectKey ?? 'configured project'}`
+                  : 'Add Jira and OpenAI env vars on the backend to enable the assistant'}
+              </Typography>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {currentRoom.ownerChatMessages.length === 0 ? (
+                <div className="rounded-lg bg-surface-50 p-4 dark:bg-surface-800/50">
+                  <Typography variant="small" className="text-surface-600 dark:text-surface-400">
+                    Ask things like `Summarize ABC-123`, `What is the QA effort for ABC-123?`, or
+                    `Give me a delivery estimate for ABC-123`.
+                  </Typography>
+                </div>
+              ) : (
+                <div className="max-h-80 space-y-3 overflow-y-auto rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+                  {currentRoom.ownerChatMessages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`rounded-lg p-3 ${
+                        message.role === 'user'
+                          ? 'bg-surface-900 text-surface-50 dark:bg-surface-100 dark:text-surface-900'
+                          : 'bg-surface-50 text-surface-800 dark:bg-surface-800 dark:text-surface-100'
+                      }`}
+                    >
+                      <Typography
+                        variant="small"
+                        className={`mb-1 font-medium ${
+                          message.role === 'user'
+                            ? 'text-surface-200 dark:text-surface-700'
+                            : 'text-surface-500 dark:text-surface-400'
+                        }`}
+                      >
+                        {message.role === 'user' ? 'You' : 'Assistant'}
+                      </Typography>
+                      <pre className="whitespace-pre-wrap break-words text-sm font-sans">{message.text}</pre>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {currentRoom.currentJiraIssue && currentRoom.currentJiraAnalysis && (
+                <div className="rounded-lg border border-surface-200 p-4 dark:border-surface-700">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <Typography variant="h6">
+                        {currentRoom.currentJiraIssue.ticketKey}: {currentRoom.currentJiraIssue.title}
+                      </Typography>
+                      <Typography variant="small" className="text-surface-600 dark:text-surface-400">
+                        Status: {currentRoom.currentJiraIssue.status ?? '—'} • Assignee:{' '}
+                        {currentRoom.currentJiraIssue.assignee ?? 'Unassigned'} • Priority:{' '}
+                        {currentRoom.currentJiraIssue.priority ?? '—'}
+                      </Typography>
+                    </div>
+                    <Button variant="secondary" onClick={handleUseTicketForVoting} className="w-full sm:w-auto">
+                      Use For Voting
+                    </Button>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="rounded-lg bg-surface-50 p-3 dark:bg-surface-800/50">
+                      <Typography variant="small" className="text-surface-500 dark:text-surface-400">
+                        Dev ETA
+                      </Typography>
+                      <Typography variant="h6">{formatNumber(currentRoom.currentJiraAnalysis.devEtaDays)} days</Typography>
+                    </div>
+                    <div className="rounded-lg bg-surface-50 p-3 dark:bg-surface-800/50">
+                      <Typography variant="small" className="text-surface-500 dark:text-surface-400">
+                        QA ETA
+                      </Typography>
+                      <Typography variant="h6">{formatNumber(currentRoom.currentJiraAnalysis.qaEtaDays)} days</Typography>
+                    </div>
+                    <div className="rounded-lg bg-surface-50 p-3 dark:bg-surface-800/50">
+                      <Typography variant="small" className="text-surface-500 dark:text-surface-400">
+                        Suggested Points
+                      </Typography>
+                      <Typography variant="h6">{formatNumber(currentRoom.currentJiraAnalysis.suggestedStoryPoints)}</Typography>
+                    </div>
+                    <div className="rounded-lg bg-surface-50 p-3 dark:bg-surface-800/50">
+                      <Typography variant="small" className="text-surface-500 dark:text-surface-400">
+                        Confidence
+                      </Typography>
+                      <Typography variant="h6">{formatConfidence(currentRoom.currentJiraAnalysis.confidence)}</Typography>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    <div>
+                      <Typography variant="small" className="font-medium text-surface-700 dark:text-surface-300">
+                        Summary
+                      </Typography>
+                      <Typography variant="small" className="text-surface-600 dark:text-surface-400">
+                        {currentRoom.currentJiraAnalysis.summary}
+                      </Typography>
+                    </div>
+                    <div>
+                      <Typography variant="small" className="font-medium text-surface-700 dark:text-surface-300">
+                        Explanation
+                      </Typography>
+                      <Typography variant="small" className="text-surface-600 dark:text-surface-400">
+                        {currentRoom.currentJiraAnalysis.explanation}
+                      </Typography>
+                    </div>
+                    {currentRoom.currentJiraAnalysis.assumptions.length > 0 && (
+                      <div>
+                        <Typography variant="small" className="font-medium text-surface-700 dark:text-surface-300">
+                          Assumptions
+                        </Typography>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {currentRoom.currentJiraAnalysis.assumptions.map((assumption, index) => (
+                            <span
+                              key={`${assumption}-${index}`}
+                              className="rounded-full bg-surface-100 px-3 py-1 text-xs text-surface-700 dark:bg-surface-800 dark:text-surface-200"
+                            >
+                              {assumption}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-3">
+                <Input
+                  label="Ask About A Jira Ticket"
+                  placeholder="e.g., Summarize ABC-123 and predict dev + QA ETA"
+                  value={assistantPrompt}
+                  onChange={(e) => {
+                    setAssistantPrompt(e.target.value);
+                    if (assistantError) {
+                      setAssistantError('');
+                    }
+                  }}
+                  disabled={!canUseJiraAssistant || isSendingAssistantPrompt}
+                  error={assistantError}
+                />
+                <div className="flex justify-end">
+                  <Button
+                    variant="primary"
+                    onClick={handleSendAssistantPrompt}
+                    disabled={!canUseJiraAssistant || isSendingAssistantPrompt}
+                    className="w-full sm:w-auto"
+                  >
+                    {isSendingAssistantPrompt ? (
+                      <>
+                        <LoadingSpinner size="sm" />
+                        Thinking...
+                      </>
+                    ) : (
+                      'Ask Assistant'
+                    )}
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -708,6 +922,7 @@ export function RoomPage() {
                   <thead>
                     <tr className="border-b border-surface-200 text-left dark:border-surface-700">
                       <th className="px-3 py-2 font-medium text-surface-600 dark:text-surface-300">Feature</th>
+                      <th className="px-3 py-2 font-medium text-surface-600 dark:text-surface-300">Summary</th>
                       <th className="px-3 py-2 font-medium text-surface-600 dark:text-surface-300">Avg (All Users)</th>
                       <th className="px-3 py-2 font-medium text-surface-600 dark:text-surface-300">Dev Mode</th>
                       <th className="px-3 py-2 font-medium text-surface-600 dark:text-surface-300">Dev Decision</th>
@@ -725,6 +940,9 @@ export function RoomPage() {
                       >
                         <td className="px-3 py-3 font-medium text-surface-900 dark:text-surface-50">
                           {feature.featureNumber}
+                        </td>
+                        <td className="px-3 py-3 text-surface-700 dark:text-surface-300">
+                          {feature.featureSummary ?? '—'}
                         </td>
                         <td className="px-3 py-3 text-surface-700 dark:text-surface-300">
                           {formatNumber(feature.overallAverage)}

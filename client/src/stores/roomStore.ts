@@ -24,8 +24,44 @@ export interface RoleSummary {
 
 export interface FeatureHistoryEntry {
   featureNumber: string;
+  featureSummary: string | null;
   overallAverage: number | null;
   roleSummaries: Record<UserRole, RoleSummary>;
+}
+
+export interface JiraConnection {
+  isConfigured: boolean;
+  baseUrl: string | null;
+  projectKey: string | null;
+}
+
+export interface OwnerChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  text: string;
+  createdAt: string;
+}
+
+export interface JiraIssueSummary {
+  ticketKey: string;
+  title: string;
+  status: string | null;
+  assignee: string | null;
+  priority: string | null;
+  description: string | null;
+  acceptanceCriteria: string | null;
+  estimate: string | null;
+  url: string | null;
+}
+
+export interface JiraAssistantAnalysis {
+  summary: string;
+  devEtaDays: number | null;
+  qaEtaDays: number | null;
+  suggestedStoryPoints: number | null;
+  confidence: 'low' | 'medium' | 'high' | null;
+  assumptions: string[];
+  explanation: string;
 }
 
 export interface Room {
@@ -39,6 +75,10 @@ export interface Room {
   isRevealed: boolean;
   currentFeatureNumber: string | null;
   featureHistory: FeatureHistoryEntry[];
+  jiraConnection: JiraConnection;
+  ownerChatMessages: OwnerChatMessage[];
+  currentJiraIssue: JiraIssueSummary | null;
+  currentJiraAnalysis: JiraAssistantAnalysis | null;
 }
 
 interface RoomStore {
@@ -112,6 +152,13 @@ socket.on('revote-started', (data: { room: Room }) => {
 });
 
 socket.on('feature-decisions-saved', (data: { room: Room }) => {
+  const { currentRoom } = useRoomStore.getState();
+  if (currentRoom && currentRoom.id === data.room.id) {
+    useRoomStore.getState().setCurrentRoom(data.room);
+  }
+});
+
+socket.on('jira-assistant-updated', (data: { room: Room }) => {
   const { currentRoom } = useRoomStore.getState();
   if (currentRoom && currentRoom.id === data.room.id) {
     useRoomStore.getState().setCurrentRoom(data.room);
