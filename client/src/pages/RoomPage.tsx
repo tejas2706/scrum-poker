@@ -10,6 +10,8 @@ import { EstimationInsights } from '../components/EstimationInsights';
 import { useConnectionStore } from '../stores/connectionStore';
 
 const FIBONACCI_SEQUENCE = ['1', '2', '3', '5', '8', '13', '21', '34', '55', '89', '?'];
+const SEQUENTIAL_SEQUENCE = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '?'];
+type CardScale = 'fibonacci' | 'sequential';
 const ROLE_ORDER: UserRole[] = ['developer', 'qa', 'product-owner'];
 const ROLE_LABELS: Record<UserRole, string> = {
   developer: 'Developer',
@@ -35,12 +37,17 @@ function getCurrentFeatureSummary(featureHistory: FeatureHistoryEntry[], feature
   return undefined;
 }
 
+function getVotingSequence(cardScale: CardScale) {
+  return cardScale === 'sequential' ? SEQUENTIAL_SEQUENCE : FIBONACCI_SEQUENCE;
+}
+
 export function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { currentRoom, currentUser } = useRoomStore();
   const connectionStatus = useConnectionStore((s) => s.status);
   const [selectedVote, setSelectedVote] = useState<string | null>(null);
+  const [cardScale, setCardScale] = useState<CardScale>('fibonacci');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRevealing, setIsRevealing] = useState(false);
   const [isRevoting, setIsRevoting] = useState(false);
@@ -147,6 +154,7 @@ export function RoomPage() {
   const canVoteAgain = isCreator && currentRoom.isRevealed;
   const hasActiveFeature = !!currentRoom.currentFeatureNumber;
   const canStartFeature = isCreator && (!hasActiveFeature || currentRoom.isRevealed);
+  const votingSequence = getVotingSequence(cardScale);
 
   const handleVote = (value: string) => {
     if (currentRoom.isRevealed || isSubmitting || !hasActiveFeature) return;
@@ -275,11 +283,11 @@ export function RoomPage() {
     const handleKeyPress = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
       
-      const index = FIBONACCI_SEQUENCE.indexOf(selectedVote || '');
-      if (e.key === 'ArrowRight' && index < FIBONACCI_SEQUENCE.length - 1) {
-        handleVote(FIBONACCI_SEQUENCE[index + 1]);
+      const index = votingSequence.indexOf(selectedVote || '');
+      if (e.key === 'ArrowRight' && index < votingSequence.length - 1) {
+        handleVote(votingSequence[index + 1]);
       } else if (e.key === 'ArrowLeft' && index > 0) {
-        handleVote(FIBONACCI_SEQUENCE[index - 1]);
+        handleVote(votingSequence[index - 1]);
       } else if (e.key === 'Enter' && selectedVote && !hasVoted) {
         handleSubmitVote();
       }
@@ -288,7 +296,7 @@ export function RoomPage() {
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedVote, hasVoted, currentRoom.isRevealed]);
+  }, [selectedVote, hasVoted, currentRoom.isRevealed, cardScale]);
 
   return (
     <div className="mx-auto max-w-6xl px-4 sm:px-6 pt-20 sm:pt-24 pb-12 sm:pb-20">
@@ -556,7 +564,27 @@ export function RoomPage() {
         >
           <Card>
             <CardHeader>
-              <Typography variant="h5">Select Your Estimate</Typography>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <Typography variant="h5">Select Your Estimate</Typography>
+                <div className="rounded-lg border border-surface-200 p-1 dark:border-surface-700">
+                  <div className="flex items-center gap-1">
+                    {(['fibonacci', 'sequential'] as CardScale[]).map((scale) => (
+                      <button
+                        key={scale}
+                        type="button"
+                        onClick={() => setCardScale(scale)}
+                        className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                          cardScale === scale
+                            ? 'bg-surface-900 text-surface-50 dark:bg-surface-50 dark:text-surface-900'
+                            : 'text-surface-600 dark:text-surface-300'
+                        }`}
+                      >
+                        {scale === 'fibonacci' ? 'Fibonacci' : 'Sequential'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
               {currentRoom.currentFeatureNumber && (
                 <Typography variant="small" className="mt-1 text-surface-600 dark:text-surface-400">
                   Voting for feature {currentRoom.currentFeatureNumber}
@@ -570,7 +598,7 @@ export function RoomPage() {
             </CardHeader>
             <CardContent>
               <div className="flex flex-wrap gap-3 sm:gap-4 justify-center py-4">
-                {FIBONACCI_SEQUENCE.map((value) => (
+                {votingSequence.map((value) => (
                   <VotingCard
                     key={value}
                     value={value}
