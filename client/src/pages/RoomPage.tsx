@@ -10,7 +10,7 @@ import { EstimationInsights } from '../components/EstimationInsights';
 import { useConnectionStore } from '../stores/connectionStore';
 
 const FIBONACCI_SEQUENCE = ['1', '2', '3', '5', '8', '13', '21', '34', '55', '89', '?'];
-const SEQUENTIAL_SEQUENCE = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '?'];
+const SEQUENTIAL_SEQUENCE = ['0.5', '1', '1.5', '2', '2.5', '3', '3.5', '4', '4.5', '5', '?'];
 type CardScale = 'fibonacci' | 'sequential';
 const ROLE_ORDER: UserRole[] = ['developer', 'qa', 'product-owner'];
 const ROLE_LABELS: Record<UserRole, string> = {

@@ -6,5 +6,35 @@
     "createdBy": "test",
     "featureHistory": [],
     "updatedAt": "2026-03-31T07:25:15.190Z"
+  },
+  "VKQLL4": {
+    "roomId": "VKQLL4",
+    "roomName": "test",
+    "createdAt": "2026-04-01T11:56:00.433Z",
+    "createdBy": "Test 2",
+    "featureHistory": [
+      {
+        "featureNumber": "RMPRD-5261",
+        "overallAverage": 1.5,
+        "roleSummaries": {
+          "developer": {
+            "average": 1.5,
+            "mode": "1.5",
+            "finalDecision": null
+          },
+          "qa": {
+            "average": null,
+            "mode": null,
+            "finalDecision": null
+          },
+          "product-owner": {
+            "average": null,
+            "mode": null,
+            "finalDecision": null
+          }
+        }
+      }
+    ],
+    "updatedAt": "2026-04-01T11:56:18.463Z"
   }
 }
